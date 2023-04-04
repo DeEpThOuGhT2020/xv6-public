@@ -7,18 +7,23 @@
 #include "proc.h"
 #include "spinlock.h"
 
+
+// Global variable for scheduling policy
+int sched_pol = 0 ;
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
 } ptable;
 
 static struct proc *initproc;
-
+struct spinlock custom_lock;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+
 
 void
 pinit(void)
@@ -89,6 +94,14 @@ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
 
+  // Setting the default parameters for the proc
+  p->sched_policy = -1 ;
+  p->abs_deadline = __INT_MAX__ - 1;
+  p->rel_deadline = __INT_MAX__ - 1;
+  p->elapsed_time = 0;
+  p->wait_time = 0;
+  p->execution_time = 100;
+
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -124,6 +137,10 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
+
+  // // setting the deadline and execution time for the init process
+  // p->deadline = 1000;
+  // p->execution_time = 500;
   
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
@@ -189,6 +206,14 @@ fork(void)
     return -1;
   }
 
+  // // Setting the parameters for the proc
+  // np->deadline = curproc->deadline;
+  // np->elapsed_time = curproc->elapsed_time;
+  // np->wait_time = curproc->wait_time;
+  // np->execution_time = curproc->execution_time;
+
+  
+
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
     kfree(np->kstack);
@@ -247,6 +272,10 @@ exit(void)
   end_op();
   curproc->cwd = 0;
 
+  
+  
+  
+
   acquire(&ptable.lock);
 
   // Parent might be sleeping in wait().
@@ -295,6 +324,15 @@ wait(void)
         p->name[0] = 0;
         p->killed = 0;
         p->state = UNUSED;
+
+        // // Reset the parameters of the process
+        // p->deadline = 1000;
+        // p->elapsed_time = 0;
+        // p->wait_time = 0;
+        // p->execution_time = 100;
+        
+
+
         release(&ptable.lock);
         return pid;
       }
@@ -319,16 +357,80 @@ wait(void)
 //  - swtch to start running that process
 //  - eventually that process transfers control
 //      via swtch back to the scheduler.
+
+
+void timing_update(void){
+struct proc *p;
+for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state == RUNNING){
+        p->elapsed_time++;
+      }else if(p->state == RUNNABLE){
+        p->wait_time++;
+      }
+    }
+}
+
+
 void
 scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
+
+  // // Original code
   
+  // for(;;){
+    
+  //   // Enable interrupts on this processor.
+  //   sti();
+
+  //   // print hello
+  //   // cprintf("hello");
+
+
+  //   // Loop over process table looking for process to run.
+  //   acquire(&ptable.lock);
+  //   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+  //     if(p->state != RUNNABLE)
+  //       continue;
+
+  //     // Switch to chosen process.  It is the process's job
+  //     // to release ptable.lock and then reacquire it
+  //     // before jumping back to us.
+
+  //     //print the process id 
+  //     cprintf("Process id is %d \n", p->pid);
+  //     c->proc = p;
+  //     switchuvm(p);
+  //     p->state = RUNNING; // print all info about the process
+  //     cprintf("Process name is %s \n", p->name);
+
+
+  //     swtch(&(c->scheduler), p->context);
+  //     switchkvm();
+
+  //     // Process is done running for now.
+  //     // It should have changed its p->state before coming back.
+  //     c->proc = 0;
+  //   }
+  //   release(&ptable.lock);
+
+  // }
+
+
+  if(sched_pol==0){
+    // EDF
   for(;;){
+    if(sched_pol == 1){
+      break;
+    }
+    
     // Enable interrupts on this processor.
     sti();
+    struct proc *sup;
+    int earliest_deadline=__INT_MAX__;
+    int flag= 0 ;
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
@@ -336,23 +438,103 @@ scheduler(void)
       if(p->state != RUNNABLE)
         continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+      //   // print the process id
+      // cprintf("Process id is %d \n", p->pid);
+      // cprintf("Process name is %s \n", p->name);
+      // cprintf("Process deadline is %d \n", p->abs_deadline);
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+      if(p->abs_deadline<earliest_deadline){
+        earliest_deadline=p->abs_deadline;
+        sup=p;
+        flag =1 ;
+      }
     }
+      if(flag==0){
+        release(&ptable.lock);
+          continue;
+      }
+
+
+      c->proc = sup;
+      switchuvm(sup);
+      sup->state = RUNNING;
+
+      // // print the selected process
+      // cprintf("Selected Process id is %d \n", sup->pid);
+      // // cprintf("Process name is %s \n", sup->name);
+      // cprintf("Process deadline is %d \n", sup->abs_deadline);
+      // // print the sched policy
+      // cprintf("Scheduling policy is %d \n", sched_pol);
+
+
+      
+    // timing_update();
+
+      swtch(&(c->scheduler), sup->context);
+      switchkvm();
+      c->proc = 0;
     release(&ptable.lock);
 
   }
+  }
+
+
+   if(sched_pol==1){
+    // RM Scheduler
+    // cprintf("RM Scheduler \n");
+    for(;;){
+    sti();
+    struct proc *sup;
+    int least_priority_level=4;
+    int flag= 0 ;
+    acquire(&ptable.lock);
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state != RUNNABLE)
+        continue;
+
+      //   // print the process id
+      // cprintf("Process id is %d \n", p->pid);
+      // // cprintf("Process name is %s \n", p->name);
+      // cprintf("Process priority level is %d \n", p->priority_level);
+      // // print rate
+      // cprintf("Process rate is %d \n", p->rate);
+
+      if(p->priority_level<least_priority_level){
+        least_priority_level=p->priority_level;
+        sup=p;
+        flag =1 ;
+      }
+    }
+
+      if(flag==0){
+        release(&ptable.lock);
+          continue;
+      }
+
+      c->proc = sup;
+      switchuvm(sup);
+      sup->state = RUNNING;
+      // print the selected process
+      // cprintf("Selected Process id is %d \n", sup->pid);
+      // // cprintf("Process name is %s \n", sup->name);
+      // cprintf("Selected Process priority level is %d \n", sup->priority_level);
+      // // print rate
+      // cprintf("Selected Process rate is %d \n", sup->rate);
+      
+      // timing_update();
+      swtch(&(c->scheduler), sup->context);
+      switchkvm();
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;
+
+    release(&ptable.lock);
+
+  }
+
+
+  }
+  
 }
 
 // Enter scheduler.  Must hold only ptable.lock
@@ -480,7 +662,6 @@ int
 kill(int pid)
 {
   struct proc *p;
-
   acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == pid){
@@ -532,3 +713,303 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+// print a list of all current running processes with their pid and name
+void print_processes(void){
+  struct proc *p;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING){
+      cprintf("pid: %d, name: %s\n", p->pid, p->name);
+    }
+  }
+  release(&ptable.lock);
+}
+
+char message_queue[NPROC][100][8];
+int message_queue_size[NPROC] = {0};
+int message_queue_head_tail[NPROC][2] = {0};
+
+int send_unicast(int sender_pid, int receiver_pid, char *message){
+  acquire(&custom_lock);
+  if (message_queue_size[receiver_pid] == 100){
+    release(&custom_lock);
+    return -1;
+  }
+  for(int i = 0 ; i < 8 ; i++){
+    message_queue[receiver_pid][message_queue_head_tail[receiver_pid][1]][i] = message[i];
+  }
+  message_queue_size[receiver_pid]++;
+  message_queue_head_tail[receiver_pid][1] = (message_queue_head_tail[receiver_pid][1] + 1);
+  if(message_queue_head_tail[receiver_pid][1] == 100){
+
+    message_queue_head_tail[receiver_pid][1] = 0;
+  }
+  release(&custom_lock);
+  return 0;
+}
+
+int receive(char *message){
+  struct proc *p = myproc();
+    
+  acquire(&custom_lock);
+  if (message_queue_size[p->pid] == 0){
+    release(&custom_lock);
+    return -1;
+  }
+  for(int i = 0 ; i < 8 ; i++){
+    message[i] = message_queue[p->pid][message_queue_head_tail[p->pid][0]][i];
+  }
+  message_queue_size[p->pid]--;
+  message_queue_head_tail[p->pid][0] = (message_queue_head_tail[p->pid][0] + 1);
+  if(message_queue_head_tail[p->pid][0] == 100){
+    message_queue_head_tail[p->pid][0] = 0;
+  }
+  release(&custom_lock);
+  return 0;
+}
+
+
+
+int send_multicast(int sender_pid, int* receiver_ids, int receiver_pid_size, char *message){
+  acquire(&custom_lock);
+  for(int j = 0 ; j < receiver_pid_size ; j++){
+    if (message_queue_size[receiver_ids[j]] == 100){
+      release(&custom_lock);
+      return -1;
+    }
+    for(int i = 0 ; i < 8 ; i++){
+      message_queue[receiver_ids[j]][message_queue_head_tail[receiver_ids[j]][1]][i] = message[i];
+    }
+    message_queue_size[receiver_ids[j]]++;
+    message_queue_head_tail[receiver_ids[j]][1] = (message_queue_head_tail[receiver_ids[j]][1] + 1);
+    if(message_queue_head_tail[receiver_ids[j]][1] == 100){
+      message_queue_head_tail[receiver_ids[j]][1] = 0;
+    }
+  }
+  release(&custom_lock);
+  return 0;
+}
+
+
+
+
+// Set execution time of a process
+int set_exec_time(int pid, int exectime){
+  struct proc *p;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->pid == pid){
+      p->execution_time = 1*exectime;
+      release(&ptable.lock);
+      return 0;
+    }
+  }
+  release(&ptable.lock);
+  return -22;
+}
+
+
+
+// Set Deadline of a process
+int set_deadline(int pid, int deadline){
+  struct proc *p;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->pid == pid){
+      p->rel_deadline = 1*(deadline);
+      p->abs_deadline = 1*(deadline);
+      release(&ptable.lock);
+      return 0;
+    }
+  }
+  release(&ptable.lock);
+  return -22;
+}
+
+
+// Set rate of a process
+int set_rate(int pid, int rate){
+  struct proc *p;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->pid == pid){
+      p->rate = rate;
+
+      // Update the priority level (the lower the priority level, the higher the priority)
+      int temp;
+      
+      if((30-p->rate)%29 == 0){
+        temp = 3*(30-p->rate)/29;
+      }
+      else{
+        temp = 3*(30-p->rate)/29 + 1;
+      }
+
+      // find max of temp and 1
+      if(temp > 1){
+        p->priority_level = temp;
+      }
+      else{
+        p->priority_level = 1;
+      }
+
+      release(&ptable.lock);
+      return 0;
+    }
+  }
+  release(&ptable.lock);
+  return -22;
+}
+
+// Set policy of a process
+int set_policy(int pid, int policy){
+  struct proc *p;
+  acquire(&ptable.lock);
+
+      // Schedulability check for EDF
+      if(policy==0){
+        int util = 0;
+        for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+          if(p->pid == pid){
+            p->sched_policy = policy;
+            sched_pol = policy;
+            // Update the deadline
+            p->abs_deadline += ticks;  
+            break;
+          }
+
+          if ((p->state == RUNNING || p->state == RUNNABLE  || (p->state == ZOMBIE) ) && p->killed!=1) {
+              util += (1000*(p->execution_time))/p->rel_deadline;
+          } 
+        }
+
+        util += (1000*(p->execution_time))/p->rel_deadline;
+        // print util
+        // cprintf("Utilization: %d\n", util );
+
+        if(util > 1*1000){
+          // print pid of process that is not schedulable
+          // cprintf("PID: %d | Schedulability check failed. This process is not schedulable. \n", p->pid);
+          release(&ptable.lock);
+          //kill this process
+          kill(pid);
+          return -22;
+        } 
+        // else 
+        // {
+        //   yield();
+        // }
+      }
+      // Schedulability check for RM
+      else if(policy == 1){
+        int util = 0;
+        int n = 0;
+        int b[64] = {100, 82, 77, 75, 74, 73, 72, 72, 72, 71, 71, 71, 71, 71, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69};
+        for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+
+          if(p->pid == pid){
+            p->sched_policy = policy;
+            sched_pol = policy;
+            // Update the deadline
+            p->abs_deadline += ticks;  
+            break;
+          }
+
+          if ((p->state == RUNNING || p->state == RUNNABLE  || (p->state == ZOMBIE) ) && p->killed!=1) {
+            util += (p->execution_time*p->rate);
+            n++;
+          }
+        }
+        util += (p->execution_time*p->rate);
+
+        if(util > b[n - 1]){
+          cprintf("PID: %d | Schedulability check failed. This process is not schedulable. \n", p->pid);
+          release(&ptable.lock);
+          //kill this process
+          kill(pid);
+          return -22;
+        }
+
+      }
+
+  // for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+  //   if(p->pid == pid){
+  //     p->sched_policy = policy;
+  //     sched_pol = policy;
+
+  //     //prin sched_pol
+  //     // cprintf("Sched_pol: %d \n", sched_pol);
+  //     release(&ptable.lock);
+  //     return 0;
+  //   }
+  // }
+  release(&ptable.lock);
+  return -22;
+}
+
+
+int get_info(void){
+  struct proc *p;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING){
+      cprintf("pid: %d, name: %s, execution_time: %d, abs_deadline: %d, rate: %d, policy: %d\n", p->pid, p->name, p->execution_time, p->abs_deadline, p->rate, p->sched_policy);
+    }
+  }
+  release(&ptable.lock);
+  return 0;
+}
+
+// void
+// scheduler(void)
+// {
+//   struct proc *p;
+//   struct proc *sup = 0;
+//   int flag = 0;
+//   struct cpu *c = mycpu();
+//   c->proc = 0;
+
+//   for(;;){
+//     sti();
+//     acquire(&ptable.lock);
+//     if(sched_pol == 0){
+//       for(p = ptable.proc ; p < &ptable.proc[NPROC] ; p++){
+//         if( p->state == RUNNABLE && p->sched_policy >= 0){
+//           sup = p;
+//           flag = 1;
+//           break;
+//         }
+//       }
+//       for(p = ptable.proc ; p < &ptable.proc[NPROC] ; p++){
+//         if(p->state != RUNNABLE)
+//           continue;
+//         if(p->deadline < sup->deadline && p->sched_policy >= 0){
+//           sup = p;
+//         }
+//       }
+
+//       if(flag == 1){
+//         c->proc = sup;
+//         switchuvm(sup);
+//         sup->state = RUNNING;
+//         swtch(&c->scheduler, sup->context);
+//         switchkvm();
+//         c->proc = 0;
+//       } 
+//       break;
+//     }
+//   }
+    
+// }
+// void timing_update(void){
+// struct proc *p;
+// for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+//       if(p->state == RUNNING){
+//         p->elapsed_time++;
+//       }else if(p->state == RUNNABLE){
+//         p->wait_time++;
+//       }
+//     }
+// }
+
